@@ -1,3 +1,4 @@
+
 name: Android APK Build
 
 on:
@@ -9,21 +10,27 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    env:
-      ANDROID_SDK_ROOT: /tmp/android-sdk
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: '20'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Prepare web assets
         run: npm run prepare-www
@@ -32,46 +39,21 @@ jobs:
         run: |
           if [ ! -d android ]; then
             npx cap add android
-          else
-            echo "android/ exists, skipping cap add"
           fi
 
       - name: Sync Capacitor Android
         run: npx cap sync android
 
-      - name: Install Android SDK command-line tools and packages
-        run: |
-          set -e
-          mkdir -p "$ANDROID_SDK_ROOT"
-          cd "$ANDROID_SDK_ROOT"
-          if [ ! -f "cmdline.zip" ]; then
-            wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline.zip
-            unzip -q cmdline.zip -d cmdline-tools
-            mkdir -p cmdline-tools/latest
-            mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
-          fi
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
       - name: Make gradlew executable
-        run: chmod +x android/gradlew || true
+        run: chmod +x android/gradlew
 
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK artifact
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fps-debug-apk
-          path: |
-            android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
