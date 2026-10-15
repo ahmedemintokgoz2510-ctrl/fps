@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Arkadaşlarla online 3D takım FPS",
+  "description": "Arkadaşlar online 3D taktik FPS",
   "scripts": {
     "start": "node server.js",
-    "prepare-www": "node scripts/prepare-www.js"
+    "prepare-www": "node scripts/prepare-www.js",
+    "android:prepare": "npm run prepare-www && npx cap add android && npx cap sync android",
+    "android:build": "npm run android:prepare && cd android && ./gradlew assembleDebug"
   },
   "dependencies": {
     "ws": "8.18.0"
