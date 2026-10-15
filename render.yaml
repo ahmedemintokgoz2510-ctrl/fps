@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: arkadas-fps
+    runtime: node
+    plan: free
+    buildCommand: npm install && node scripts/prepare-www.js
+    startCommand: node server.js
+    healthCheckPath: /health

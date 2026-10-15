@@ -1,0 +1,20 @@
+{
+  "name": "arkadas-fps",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Arkadaşlarla online 3D takım FPS",
+  "scripts": {
+    "start": "node server.js",
+    "prepare-www": "node scripts/prepare-www.js"
+  },
+  "dependencies": {
+    "ws": "8.18.0"
+  },
+  "devDependencies": {
+    "three": "0.160.0",
+    "@capacitor/core": "6.1.2",
+    "@capacitor/cli": "6.1.2",
+    "@capacitor/android": "6.1.2"
+  }
+}

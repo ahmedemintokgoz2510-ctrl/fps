@@ -1,0 +1,8 @@
+{
+  "appId": "com.arkadas.fps",
+  "appName": "Arkadas FPS",
+  "webDir": "www",
+  "backgroundColor": "#0f1923",
+  "server": { "androidScheme": "https", "cleartext": true },
+  "android": { "allowMixedContent": true }
+}
