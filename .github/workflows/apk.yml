@@ -6,9 +6,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -24,16 +28,25 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
-      - name: Install Android SDK packages
+      - name: Install required Android SDK packages
         run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --list_installed
 
       - name: Install project dependencies
         run: npm install --no-audit --no-fund
+
+      - name: Check Capacitor installation
+        run: |
+          node --version
+          npm --version
+          npx cap --version
+          npm run
 
       - name: Prepare game files
         run: npm run prepare-www
@@ -47,11 +60,11 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Build APK
+      - name: Build debug APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -59,3 +72,4 @@ jobs:
           name: fps-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 7
