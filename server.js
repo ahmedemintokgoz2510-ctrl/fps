@@ -62,9 +62,16 @@ function makeRoom(code) {
 }
 
 function pickTeam(room) {
-  const c = [0, 0];
-  for (const p of room.players.values()) c[p.team]++;
-  return c[0] <= c[1] ? 0 : 1;
+  let red = 0;
+  let blue = 0;
+
+  for (const p of room.players.values()) {
+    if (p.team === 0) red++;
+    else if (p.team === 1) blue++;
+  }
+
+  // Takımlar dengeli olsun; eşitlikte kırmızı teami al.
+  return red <= blue ? 0 : 1;
 }
 
 function spawnPlayer(room, p) {
