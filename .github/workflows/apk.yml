@@ -9,6 +9,8 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
 
     steps:
       - name: Checkout repository
@@ -27,10 +29,30 @@ jobs:
         run: npm run prepare-www
 
       - name: Add Android project if missing
-        run: npx cap add android
+        run: |
+          if [ ! -d android ]; then
+            npx cap add android
+          else
+            echo "android/ exists, skipping cap add"
+          fi
 
       - name: Sync Capacitor Android
         run: npx cap sync android
+
+      - name: Install Android SDK command-line tools and packages
+        run: |
+          set -e
+          mkdir -p "$ANDROID_SDK_ROOT"
+          cd "$ANDROID_SDK_ROOT"
+          if [ ! -f "cmdline.zip" ]; then
+            wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline.zip
+            unzip -q cmdline.zip -d cmdline-tools
+            mkdir -p cmdline-tools/latest
+            mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
+          fi
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -38,9 +60,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew || true
+
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK artifact
         if: always()
