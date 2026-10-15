@@ -34,41 +34,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configure Android SDK
+      - name: Install Android SDK packages
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          if [ ! -d "$ANDROID_HOME" ]; then
-            echo "ERROR: Android SDK directory not found: $ANDROID_HOME"
-            exit 1
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+
+          if [ ! -f "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+              -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
           fi
 
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager was not found."
-            find "$ANDROID_HOME" -maxdepth 4 -type f -name sdkmanager
+          if [ -z "$SDKMANAGER" ] || [ ! -f "$SDKMANAGER" ]; then
+            echo "ERROR: Android SDK manager not found."
             exit 1
           fi
-
-          echo "Using SDK manager: $SDKMANAGER"
-
-          yes | "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" --licenses
 
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-      - name: Check project files
+      - name: Check project
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           test -f package.json || {
             echo "ERROR: package.json is missing."
@@ -85,7 +76,7 @@ jobs:
             }
           "
 
-      - name: Install project dependencies
+      - name: Install dependencies
         run: npm install --no-audit --no-fund
 
       - name: Verify Capacitor
@@ -94,64 +85,41 @@ jobs:
       - name: Prepare game files
         run: npm run prepare-www
 
-      - name: Check Capacitor configuration
+      - name: Create Android project if missing
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           if [ ! -f capacitor.config.ts ] && \
              [ ! -f capacitor.config.js ] && \
              [ ! -f capacitor.config.json ] && \
              [ ! -f capacitor.config.mjs ]; then
-            echo "ERROR: Capacitor configuration file was not found."
+            echo "ERROR: Capacitor configuration is missing."
             exit 1
           fi
-
-      - name: Create Android project if missing
-        shell: bash
-        run: |
-          set -euo pipefail
 
           if [ ! -d android ]; then
             npx cap add android
           fi
 
           test -f android/gradlew || {
-            echo "ERROR: Android Gradle wrapper is missing."
+            echo "ERROR: android/gradlew is missing."
             exit 1
           }
 
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Build debug APK
+      - name: Build APK
         working-directory: android
-        shell: bash
         run: |
-          set -euo pipefail
-
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
-
-      - name: Verify APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="android/app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -s "$APK" ]; then
-            echo "ERROR: APK was not created at $APK"
-            find android -type f -name "*.apk" -print
-            exit 1
-          fi
-
-          ls -lh "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: fps-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
