@@ -11,8 +11,13 @@ permissions:
 
 jobs:
   build-android:
+    name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout repository
@@ -24,52 +29,129 @@ jobs:
           node-version: '20'
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-
-      - name: Install required Android SDK packages
+      - name: Configure Android SDK
+        shell: bash
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
-          sdkmanager --list_installed
+          set -euo pipefail
+
+          if [ ! -d "$ANDROID_HOME" ]; then
+            echo "ERROR: Android SDK directory not found: $ANDROID_HOME"
+            exit 1
+          fi
+
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager was not found."
+            find "$ANDROID_HOME" -maxdepth 4 -type f -name sdkmanager
+            exit 1
+          fi
+
+          echo "Using SDK manager: $SDKMANAGER"
+
+          yes | "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" --licenses
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+      - name: Check project files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f package.json || {
+            echo "ERROR: package.json is missing."
+            exit 1
+          }
+
+          node -e "
+            const p = require('./package.json');
+            console.log('Project:', p.name || 'unnamed');
+            console.log('Scripts:', JSON.stringify(p.scripts || {}, null, 2));
+            if (!p.scripts || !p.scripts['prepare-www']) {
+              console.error('ERROR: prepare-www script is missing.');
+              process.exit(1);
+            }
+          "
 
       - name: Install project dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Check Capacitor installation
-        run: |
-          node --version
-          npm --version
-          npx cap --version
-          npm run
+      - name: Verify Capacitor
+        run: npx cap --version
 
       - name: Prepare game files
         run: npm run prepare-www
 
-      - name: Create Android project if missing
+      - name: Check Capacitor configuration
+        shell: bash
         run: |
+          set -euo pipefail
+
+          if [ ! -f capacitor.config.ts ] && \
+             [ ! -f capacitor.config.js ] && \
+             [ ! -f capacitor.config.json ] && \
+             [ ! -f capacitor.config.mjs ]; then
+            echo "ERROR: Capacitor configuration file was not found."
+            exit 1
+          fi
+
+      - name: Create Android project if missing
+        shell: bash
+        run: |
+          set -euo pipefail
+
           if [ ! -d android ]; then
             npx cap add android
           fi
+
+          test -f android/gradlew || {
+            echo "ERROR: Android Gradle wrapper is missing."
+            exit 1
+          }
 
       - name: Sync Capacitor
         run: npx cap sync android
 
       - name: Build debug APK
         working-directory: android
+        shell: bash
         run: |
+          set -euo pipefail
+
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "ERROR: APK was not created at $APK"
+            find android -type f -name "*.apk" -print
+            exit 1
+          fi
+
+          ls -lh "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: fps-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
