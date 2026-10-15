@@ -1,4 +1,3 @@
-
 name: Android APK Build
 
 on:
@@ -15,43 +14,47 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install project dependencies
+        run: npm install --no-audit --no-fund
 
-      - name: Prepare web assets
+      - name: Prepare game files
         run: npm run prepare-www
 
-      - name: Add Android project if missing
+      - name: Create Android project if missing
         run: |
           if [ ! -d android ]; then
             npx cap add android
           fi
 
-      - name: Sync Capacitor Android
+      - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Make gradlew executable
-        run: chmod +x android/gradlew
-
-      - name: Build debug APK
+      - name: Build APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: fps-debug-apk
