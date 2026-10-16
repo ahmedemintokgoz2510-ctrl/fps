@@ -22,7 +22,7 @@ export const PLAYER = {
   HEAD_Y: 1.58,
   BODY_R: 0.4,
   BODY_H: 1.36,
-  MAX_HP: 100,
+  MAX_HP: 130, // öldürmeyi biraz zorlaştırmak için standart 100'den yükseltildi
 };
 
 export const WEAPONS = [

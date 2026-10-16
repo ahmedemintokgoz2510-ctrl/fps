@@ -12,7 +12,7 @@ export function newCode() {
 }
 
 export function createRoom(code) {
-  const room = { code, players: new Map(), score: [0, 0], over: false, spawnIdx: [0, 0], dead: false };
+  const room = { code, players: new Map(), score: [0, 0], over: false, spawnIdx: [0, 0], dead: false, map: 'classic' };
   let nextId = 1;
 
   const bc = (obj, except) => { for (const p of room.players.values()) if (p !== except) p.send(obj); };
@@ -89,13 +89,14 @@ export function createRoom(code) {
         if (!m || typeof m !== 'object') return;
         if (m.t === 'join' && !me) {
           if (room.players.size >= MAX_PLAYERS) { send({ t: 'err', msg: 'Oda dolu' }); return; }
+          if (m.create) room.map = String(m.map || 'classic').replace(/[^a-z]/g, '').slice(0, 16) || 'classic';
           const name = String(m.name || 'Oyuncu').replace(/[<>&"']/g, '').slice(0, 12) || 'Oyuncu';
           me = {
             id: nextId++, send, name, team: pickTeam(), k: 0, d: 0,
             x: 0, y: 0, z: 0, yaw: 0, pitch: 0, hp: 100, alive: false, w: 0, lastShot: 0, protectUntil: 0,
           };
           room.players.set(me.id, me);
-          send({ t: 'welcome', id: me.id, room: room.code, team: me.team, score: room.score.slice(), players: fullInfo() });
+          send({ t: 'welcome', id: me.id, room: room.code, team: me.team, score: room.score.slice(), players: fullInfo(), map: room.map });
           spawn(me);
           bc({ t: 'roster', players: fullInfo() });
           return;

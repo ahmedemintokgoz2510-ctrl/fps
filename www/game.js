@@ -17,6 +17,17 @@ if (!THREE) {
   throw new Error('three.js yüklenemedi');
 }
 
+// GLTF karakter/harita modelleri için yükleyiciler (yerel yoksa CDN'den) — başarısız olursa
+// oyun eski kutu-model moduna otomatik geri döner, oyun kırılmaz.
+let GLTFLoader = null, SkeletonUtils = null;
+for (const u of ['./GLTFLoader.js', 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js', 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js']) {
+  try { ({ GLTFLoader } = await import(u)); break; } catch (e) { /* sıradakini dene */ }
+}
+for (const u of ['./SkeletonUtils.js', 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/utils/SkeletonUtils.js', 'https://unpkg.com/three@0.160.0/examples/jsm/utils/SkeletonUtils.js']) {
+  try { SkeletonUtils = await import(u); break; } catch (e) { /* sıradakini dene */ }
+}
+const gltfLoader = GLTFLoader ? new GLTFLoader() : null;
+
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const store = {
@@ -86,17 +97,37 @@ const lowQ = quality === 'low';
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: !lowQ, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, lowQ ? 1 : 1.5));
 renderer.shadowMap.enabled = !lowQ;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.type = lowQ ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
+if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
 const scene = new THREE.Scene();
-const SKY = 0x8fbfe3;
+const SKY_TOP = 0x1a3a63, SKY_HORIZON = 0xa9d3ef;
+const SKY = SKY_HORIZON;
 scene.background = new THREE.Color(SKY);
-scene.fog = new THREE.Fog(SKY, 55, 130);
+scene.fog = new THREE.Fog(SKY, 58, 132);
+
+// --- gökyüzü kubbesi: tepeden ufka doğru geçişli gradyan (dönüşle birlikte hareket eder)
+function skyTexture() {
+  const c = document.createElement('canvas'); c.width = 2; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#1a3a63'); grad.addColorStop(0.55, '#4f85b4'); grad.addColorStop(1, '#c8e3f4');
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+  return new THREE.CanvasTexture(c);
+}
+const skyDome = new THREE.Mesh(
+  new THREE.SphereGeometry(190, 16, 12),
+  new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false, depthWrite: false, toneMapped: false }),
+);
+skyDome.renderOrder = -10; scene.add(skyDome);
+
 const camera = new THREE.PerspectiveCamera(BASE_FOV, 1, 0.05, 220);
 camera.rotation.order = 'YXZ';
 scene.add(camera);
 
-scene.add(new THREE.HemisphereLight(0xd8ecff, 0x55606c, 1.05));
-const sun = new THREE.DirectionalLight(0xfff0d6, 1.5);
+scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x4a5566, 0.95));
+const sun = new THREE.DirectionalLight(0xfff0d6, 2.2);
 sun.position.set(-30, 55, -20);
 if (!lowQ) {
   sun.castShadow = true;
@@ -113,21 +144,59 @@ function resize() {
 }
 window.addEventListener('resize', resize); resize();
 
-// --- zemin dokusu
-function gridTexture() {
-  const c = document.createElement('canvas'); c.width = c.height = 128;
+// --- dokular: periyodik (seamless) gürültüyle üretilmiş beton/zemin dokusu, tekrar ederken dikiş görünmez
+function seamlessNoise(ctx, size, scale, alpha) {
+  const img = ctx.createImageData(size, size);
+  const TAU = Math.PI * 2;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // periyodik (sin tabanlı) çok katmanlı gürültü: kenardan kenara tam döngü, dikişsiz
+      const u = (x / size) * TAU, v = (y / size) * TAU;
+      let n = 0;
+      n += Math.sin(u * scale + Math.sin(v * scale * 1.7)) * 0.5;
+      n += Math.sin(v * scale * 1.3 + Math.sin(u * scale * 2.1)) * 0.35;
+      n += Math.sin((u + v) * scale * 0.6) * 0.25;
+      n = n * 0.5 + 0.5; // 0..1
+      const i = (y * size + x) * 4;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = 0;
+      img.data[i + 3] = Math.max(0, Math.min(255, n * 255 * alpha));
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function panelTexture(base, light, dark, tileUnits) {
+  const size = 256;
+  const c = document.createElement('canvas'); c.width = c.height = size;
   const g = c.getContext('2d');
-  g.fillStyle = '#3b4a5a'; g.fillRect(0, 0, 128, 128);
-  g.fillStyle = '#425364'; g.fillRect(0, 0, 64, 64); g.fillRect(64, 64, 64, 64);
-  g.strokeStyle = '#2b3846'; g.lineWidth = 2; g.strokeRect(1, 1, 126, 126);
+  g.fillStyle = base; g.fillRect(0, 0, size, size);
+  // gürültü dokusu (kir/leke hissi)
+  const n = document.createElement('canvas'); n.width = n.height = size;
+  seamlessNoise(n.getContext('2d'), size, 5, 0.22);
+  g.globalAlpha = 1; g.drawImage(n, 0, 0);
+  // panel çizgileri (yapısal detay), tam kare sayısına bölünebilir -> kenarlar örtüşür
+  g.strokeStyle = dark; g.lineWidth = 2; g.globalAlpha = 0.55;
+  const cell = size / tileUnits;
+  for (let i = 0; i <= tileUnits; i++) {
+    g.beginPath(); g.moveTo(i * cell, 0); g.lineTo(i * cell, size); g.stroke();
+    g.beginPath(); g.moveTo(0, i * cell); g.lineTo(size, i * cell); g.stroke();
+  }
+  g.globalAlpha = 0.18; g.strokeStyle = light; g.lineWidth = 1;
+  for (let i = 0; i < tileUnits; i++) {
+    g.beginPath(); g.moveTo(i * cell + 1, 1); g.lineTo((i + 1) * cell - 1, 1); g.stroke();
+  }
   const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(MAP_HALF, MAP_HALF);
-  t.anisotropy = 4;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4;
   return t;
 }
+// klasik kutu-harita görseli bir grupta tutulur: özel bir harita modeli seçilince
+// bu grup gizlenir (ama BOXES çarpışma verisi her zaman aktif kalır, oyun adaleti bozulmaz)
+const classicMapGroup = new THREE.Group(); scene.add(classicMapGroup);
+
+const groundTex = panelTexture('#3b4a5a', '#58697b', '#2a3846', 4);
+groundTex.repeat.set(MAP_HALF, MAP_HALF);
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_HALF * 2, MAP_HALF * 2),
-  new THREE.MeshLambertMaterial({ map: gridTexture() }));
-ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+  new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.95, metalness: 0.04 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; classicMapGroup.add(ground);
 
 for (let team = 0; team < 2; team++) { // spawn bölgesi boyaması
   const m = new THREE.Mesh(new THREE.PlaneGeometry(MAP_HALF * 2 - 2, 11),
@@ -135,56 +204,151 @@ for (let team = 0; team < 2; team++) { // spawn bölgesi boyaması
   m.rotation.x = -Math.PI / 2; m.position.set(0, 0.02, team === 0 ? -30.5 : 30.5); scene.add(m);
 }
 
-// --- harita kutuları
-const MATS = {
-  wall: 0xd5d9de, border: 0x56677a, tower: 0x34465c, cover: 0x8294a8, crate: 0xd08e4e, plat: 0x9db0c6,
+// --- harita kutuları: malzemeye göre doku + PBR görünüm (beton/metal/ahşap hissi)
+const MAT_DEFS = {
+  wall: { base: '#d7dbe0', light: '#eef1f4', dark: '#9aa4ae', rough: 0.85, metal: 0.05 },
+  border: { base: '#4c5d70', light: '#6a7d92', dark: '#2a3744', rough: 0.9, metal: 0.05 },
+  tower: { base: '#30415a', light: '#48607e', dark: '#161e28', rough: 0.7, metal: 0.3 },
+  cover: { base: '#7c8fa3', light: '#97a9bc', dark: '#45556a', rough: 0.8, metal: 0.15 },
+  plat: { base: '#92a5bb', light: '#aebfd2', dark: '#56677c', rough: 0.75, metal: 0.1 },
 };
+function crateTexture() {
+  const size = 256;
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d');
+  g.fillStyle = '#b06a34'; g.fillRect(0, 0, size, size);
+  const n = document.createElement('canvas'); n.width = n.height = size;
+  seamlessNoise(n.getContext('2d'), size, 7, 0.25);
+  g.drawImage(n, 0, 0);
+  // tahta çizgileri
+  g.strokeStyle = '#6b3d1c'; g.lineWidth = 3; g.globalAlpha = 0.6;
+  for (let i = 1; i < 4; i++) { g.beginPath(); g.moveTo(0, (i * size) / 4); g.lineTo(size, (i * size) / 4); g.stroke(); }
+  // metal köşe bantları
+  g.globalAlpha = 1; g.fillStyle = '#3a3f46';
+  const b = size * 0.09;
+  g.fillRect(0, 0, size, b); g.fillRect(0, size - b, size, b);
+  g.fillRect(0, 0, b, size); g.fillRect(size - b, 0, b, size);
+  g.strokeStyle = '#1c1f23'; g.lineWidth = 2;
+  g.strokeRect(b * 0.3, b * 0.3, size - b * 0.6, size - b * 0.6);
+  return new THREE.CanvasTexture(c);
+}
 const matCache = {};
-const edgeMat = new THREE.LineBasicMaterial({ color: 0x14202c, transparent: true, opacity: 0.55 });
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x10181f, transparent: true, opacity: 0.6 });
+const crateTex = crateTexture();
 for (const b of BOXES) {
-  const mat = matCache[b.mat] || (matCache[b.mat] = new THREE.MeshLambertMaterial({ color: MATS[b.mat] || 0xaaaaaa }));
+  let mat = matCache[b.mat];
+  if (!mat) {
+    if (b.mat === 'crate') {
+      mat = new THREE.MeshStandardMaterial({ map: crateTex, roughness: 0.8, metalness: 0.12 });
+    } else {
+      const d = MAT_DEFS[b.mat] || MAT_DEFS.wall;
+      mat = new THREE.MeshStandardMaterial({
+        map: panelTexture(d.base, d.light, d.dark, 2), roughness: d.rough, metalness: d.metal,
+      });
+    }
+    matCache[b.mat] = mat;
+  }
   const geo = new THREE.BoxGeometry(b.w, b.h, b.d);
+  // panel tekrarını kutunun gerçek boyutuna göre ayarla (dikişsiz üretildiği için serbestçe ölçeklenir)
+  if (b.mat !== 'crate' && mat.map) {
+    const rep = mat.map.clone(); rep.needsUpdate = true;
+    rep.wrapS = rep.wrapT = THREE.RepeatWrapping;
+    rep.repeat.set(Math.max(1, Math.round(b.w / 2)), Math.max(1, Math.round(b.h / 2)));
+    mat = mat.clone(); mat.map = rep;
+  }
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(b.cx, b.y + b.h / 2, b.cz);
   mesh.castShadow = b.mat !== 'border'; mesh.receiveShadow = true;
-  scene.add(mesh);
+  classicMapGroup.add(mesh);
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
-  edges.position.copy(mesh.position); scene.add(edges);
+  edges.position.copy(mesh.position); classicMapGroup.add(edges);
+}
+
+// --- özel harita modelleri (.glb) — seçilirse klasik kutu harita görseli gizlenir,
+// ama çarpışma (duvarlar/siperler) her zaman yukarıdaki BOXES verisinden hesaplanır.
+const MAPS = [
+  { id: 'classic', name: 'Klasik Kutu Arena', file: null },
+  { id: 'depot', name: 'Depo Bölgesi', file: './models/map-depot.glb' },
+  { id: 'outpost', name: 'İleri Karakol', file: './models/map-outpost.glb' },
+  { id: 'haven', name: 'Liman Sahası', file: './models/map-haven.glb' },
+];
+let customMapGroup = null;
+async function loadMapScene(id) {
+  const def = MAPS.find((m) => m.id === id) || MAPS[0];
+  if (customMapGroup) { scene.remove(customMapGroup); customMapGroup = null; }
+  if (!def.file || !gltfLoader) { classicMapGroup.visible = true; return; }
+  try {
+    const g = await new Promise((res, rej) => gltfLoader.load(def.file, res, undefined, rej));
+    const root = g.scene;
+    const bbox = new THREE.Box3().setFromObject(root);
+    const size = new THREE.Vector3(); bbox.getSize(size);
+    const center = new THREE.Vector3(); bbox.getCenter(center);
+    const targetSpan = MAP_HALF * 2 * 0.96;
+    const scale = targetSpan / Math.max(size.x, size.z, 0.001);
+    root.scale.setScalar(scale);
+    root.position.x = -center.x * scale;
+    root.position.z = -center.z * scale;
+    root.position.y = -bbox.min.y * scale;
+    root.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
+    customMapGroup = root; scene.add(root);
+    classicMapGroup.visible = false; // duvarlar/siperler görünmez ama çarpışma aynen çalışır
+  } catch (e) {
+    classicMapGroup.visible = true; // model yüklenemedi, klasik haritayla devam
+  }
 }
 
 // --- uzakta silüet (derinlik hissi)
 {
   let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const m = new THREE.MeshLambertMaterial({ color: 0x6d8199 });
   for (let i = 0; i < 46; i++) {
     const a = (i / 46) * Math.PI * 2, r = 52 + rnd() * 22;
     const w = 5 + rnd() * 9, h = 10 + rnd() * 28;
+    const hue = 0.56 + rnd() * 0.04, lum = 0.28 + rnd() * 0.16; // mavi-gri tonlarda hafif varyasyon
+    const m = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.18, lum), roughness: 1, fog: true });
     const bld = new THREE.Mesh(new THREE.BoxGeometry(w, h, 5 + rnd() * 9), m);
     bld.position.set(Math.cos(a) * r, h / 2, Math.sin(a) * r); bld.rotation.y = rnd() * 3;
+    // birkaç pencere ışığı noktası (geceye yakın derinlik hissi)
+    if (rnd() < 0.5) {
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.5, h * 0.4),
+        new THREE.MeshBasicMaterial({ color: 0xffdfa0, transparent: true, opacity: 0.35, toneMapped: false }));
+      win.position.set(0, 0, 5 / 2 + rnd() * 2 + 0.03); bld.add(win);
+    }
     scene.add(bld);
   }
 }
 
 // ============================================================ OYUNCU MODELLERİ
-const skinMat = new THREE.MeshLambertMaterial({ color: 0xe7c3a0 });
-const darkMat = new THREE.MeshLambertMaterial({ color: 0x1f2a36 });
-const gunMat = new THREE.MeshLambertMaterial({ color: 0x20262d });
-const teamMats = TEAM_COLORS.map((c) => new THREE.MeshLambertMaterial({ color: c }));
-const flashMat = new THREE.MeshBasicMaterial({ color: 0xffd070 });
+const skinMat = new THREE.MeshStandardMaterial({ color: 0xe7c3a0, roughness: 0.75 });
+const darkMat = new THREE.MeshStandardMaterial({ color: 0x1b242e, roughness: 0.65, metalness: 0.15 });
+const bootMat = new THREE.MeshStandardMaterial({ color: 0x12171d, roughness: 0.7, metalness: 0.1 });
+const visorMat = new THREE.MeshStandardMaterial({ color: 0x0d1318, roughness: 0.25, metalness: 0.6 });
+const gunMat = new THREE.MeshStandardMaterial({ color: 0x23282f, roughness: 0.4, metalness: 0.6 });
+const gunMat2 = new THREE.MeshStandardMaterial({ color: 0x3a4149, roughness: 0.5, metalness: 0.4 });
+const teamMats = TEAM_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.55, metalness: 0.1 }));
+const teamAccentMats = TEAM_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.3, metalness: 0.2, emissive: c, emissiveIntensity: 0.25 }));
+const flashMat = new THREE.MeshBasicMaterial({ color: 0xffd070, toneMapped: false });
 const box = (w, h, d, mat, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); return m; };
 
-function makeAvatar(team, name, showTag) {
+function makeBoxAvatar(team, name, showTag) {
   const g = new THREE.Group();
-  const legL = box(0.18, 0.8, 0.22, darkMat, -0.12, 0.4, 0);
-  const legR = box(0.18, 0.8, 0.22, darkMat, 0.12, 0.4, 0);
+  const legL = box(0.18, 0.62, 0.22, darkMat, -0.12, 0.49, 0);
+  const legR = box(0.18, 0.62, 0.22, darkMat, 0.12, 0.49, 0);
+  const bootL = box(0.2, 0.18, 0.26, bootMat, -0.12, 0.1, 0.01);
+  const bootR = box(0.2, 0.18, 0.26, bootMat, 0.12, 0.1, 0.01);
   const torso = box(0.5, 0.62, 0.28, teamMats[team], 0, 1.1, 0);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 10), skinMat); head.position.y = 1.58;
+  const chestStripe = box(0.52, 0.1, 0.05, teamAccentMats[team], 0, 1.22, -0.14);
+  const shoulderL = box(0.2, 0.14, 0.26, darkMat, -0.28, 1.38, 0);
+  const shoulderR = box(0.2, 0.14, 0.26, darkMat, 0.28, 1.38, 0);
+  const neck = box(0.16, 0.08, 0.16, skinMat, 0, 1.46, 0);
+  const head = box(0.3, 0.26, 0.3, darkMat, 0, 1.6, 0); // kask
+  const visor = box(0.26, 0.09, 0.04, visorMat, 0, 1.58, -0.15);
   const armR = box(0.12, 0.12, 0.55, teamMats[team], 0.3, 1.2, -0.22);
   const armL = box(0.12, 0.12, 0.45, teamMats[team], -0.22, 1.15, -0.2); armL.rotation.y = 0.5;
   const gun = box(0.07, 0.1, 0.55, gunMat, 0.3, 1.2, -0.5);
+  const gunMag = box(0.05, 0.14, 0.08, gunMat2, 0.3, 1.1, -0.42);
   const flash = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 6), flashMat);
   flash.position.set(0.3, 1.2, -0.85); flash.visible = false;
-  g.add(legL, legR, torso, head, armR, armL, gun, flash);
+  g.add(legL, legR, bootL, bootR, torso, chestStripe, shoulderL, shoulderR, neck, head, visor, armR, armL, gun, gunMag, flash);
   g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
   g.userData = { legL, legR, flash, flashT: 0 };
   if (showTag) {
@@ -198,19 +362,122 @@ function makeAvatar(team, name, showTag) {
   return g;
 }
 
+// --- gerçek 3D asker modelleri (.glb): her takım kendi modelini kullanır (5v5, takım içinde tek model).
+// Mavi takım = soldier-blue.glb (kendi silahı + çok sayıda animasyon), Kırmızı = soldier-red.glb.
+const SOLDIER_FILES = ['./models/soldier-blue.glb', './models/soldier-red.glb'];
+const TEAM_HAS_OWN_GUN = [true, false];
+const TEAM_CLIP_NAMES = [
+  { idle: 'Idle', walk: 'Walk', run: 'Run' },
+  { idle: 'mixamo.com', walk: 'mixamo.com', run: 'mixamo.com' },
+];
+const soldierGLTF = [null, null];
+let modelsReady = false;
+async function preloadSoldiers() {
+  if (!gltfLoader || !SkeletonUtils) return;
+  await Promise.all(SOLDIER_FILES.map((url, i) => new Promise((res) => {
+    gltfLoader.load(url, (g) => { soldierGLTF[i] = g; res(); }, undefined, () => res());
+  })));
+  modelsReady = soldierGLTF.some(Boolean);
+}
+$('bCreate').disabled = $('bJoin').disabled = true;
+$('err').textContent = 'Modeller yükleniyor…';
+preloadSoldiers().then(() => {
+  $('bCreate').disabled = $('bJoin').disabled = false;
+  $('err').textContent = '';
+  if (soldierGLTF[0]) {
+    menuShowcase = buildGltfAvatar(0, '', false);
+    if (menuShowcase) { menuShowcase.position.set(0, 0, -6); menuShowcase.rotation.y = 0.6; scene.add(menuShowcase); }
+  }
+});
+
+function playClip(g, name, fade = 0.15) {
+  const ud = g.userData;
+  const clip = ud.clips[name] || Object.values(ud.clips)[0];
+  if (!clip) return;
+  if (ud.curAction && ud.curActionName === name) return;
+  const action = ud.mixer.clipAction(clip);
+  action.reset().setLoop(THREE.LoopRepeat, Infinity);
+  if (ud.curAction) { ud.curAction.crossFadeTo(action, fade, false); } else { action.fadeIn(fade); }
+  action.play();
+  ud.curAction = action; ud.curActionName = name;
+}
+
+function buildGltfAvatar(team, name, showTag) {
+  const src = soldierGLTF[team];
+  if (!src) return null;
+  const clone = SkeletonUtils.clone(src.scene);
+  const bbox = new THREE.Box3().setFromObject(clone);
+  const h = Math.max(0.1, bbox.max.y - bbox.min.y);
+  const scale = 1.8 / h;
+  clone.scale.setScalar(scale);
+  clone.position.y = -bbox.min.y * scale;
+  clone.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  const g = new THREE.Group(); g.add(clone);
+
+  const flash = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6, 6), flashMat);
+  flash.position.set(0.25, 1.3, -0.55); flash.visible = false; g.add(flash);
+
+  if (!TEAM_HAS_OWN_GUN[team]) { // bu modelde silah yok: elle tutuşturulmuş bir tüfek ekle
+    const handGun = new THREE.Group();
+    handGun.add(box(0.07, 0.1, 0.5, gunMat, 0, 0, 0), box(0.045, 0.1, 0.1, gunMat2, 0, -0.08, 0.12));
+    handGun.position.set(0.26, 1.2, -0.28); g.add(handGun);
+  }
+  if (showTag) {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+    const x = c.getContext('2d'); x.font = 'bold 34px sans-serif'; x.textAlign = 'center';
+    x.lineWidth = 6; x.strokeStyle = '#000a'; x.strokeText(name, 128, 42);
+    x.fillStyle = TEAM_COLORS[team]; x.fillText(name, 128, 42);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true }));
+    sp.scale.set(1.6, 0.4, 1); sp.position.y = 2.1; sp.renderOrder = 10; g.add(sp);
+  }
+  const mixer = new THREE.AnimationMixer(clone);
+  const clips = {};
+  for (const clip of src.animations) clips[clip.name] = clip;
+  g.userData = {
+    isGltf: true, mixer, clips, curAction: null, curActionName: '', flash, flashT: 0,
+    clipNames: TEAM_CLIP_NAMES[team],
+  };
+  playClip(g, TEAM_CLIP_NAMES[team].idle, 0);
+  return g;
+}
+
+function makeAvatar(team, name, showTag) {
+  if (modelsReady && soldierGLTF[team]) {
+    const g = buildGltfAvatar(team, name, showTag);
+    if (g) return g;
+  }
+  return makeBoxAvatar(team, name, showTag);
+}
+
 // --- kendi silahın (kamera üstünde)
 const vmRoot = new THREE.Group();
 camera.add(vmRoot);
 const vmGuns = [];
 function buildViewmodels() {
   const rifle = new THREE.Group();
-  rifle.add(box(0.07, 0.11, 0.55, gunMat, 0, 0, 0), box(0.04, 0.04, 0.28, gunMat, 0, 0.01, -0.4),
-    box(0.05, 0.16, 0.08, gunMat, 0, -0.12, 0.08), box(0.045, 0.1, 0.1, gunMat, 0, -0.08, -0.12));
+  rifle.add(
+    box(0.07, 0.11, 0.55, gunMat, 0, 0, 0), // gövde
+    box(0.04, 0.04, 0.28, gunMat2, 0, 0.01, -0.4), // namlu
+    box(0.05, 0.16, 0.08, gunMat, 0, -0.12, 0.08), // kabza
+    box(0.045, 0.1, 0.1, gunMat2, 0, -0.08, -0.12), // şarjör
+    box(0.1, 0.03, 0.03, gunMat2, 0, 0.075, -0.1), // nişangah arka
+    box(0.1, 0.03, 0.03, gunMat2, 0, 0.075, -0.52), // nişangah ön
+    box(0.03, 0.07, 0.18, gunMat2, 0, -0.1, -0.28), // ön kabza
+  );
   const pistol = new THREE.Group();
-  pistol.add(box(0.06, 0.09, 0.28, gunMat, 0, 0, 0), box(0.05, 0.13, 0.07, gunMat, 0, -0.1, 0.09));
+  pistol.add(
+    box(0.06, 0.09, 0.28, gunMat, 0, 0, 0),
+    box(0.05, 0.13, 0.07, gunMat, 0, -0.1, 0.09),
+    box(0.065, 0.07, 0.1, gunMat2, 0, 0.02, -0.08), // sürgü
+  );
   const sniper = new THREE.Group();
-  sniper.add(box(0.06, 0.1, 0.8, gunMat, 0, 0, 0), box(0.03, 0.03, 0.4, gunMat, 0, 0.01, -0.6),
-    box(0.05, 0.06, 0.2, gunMat, 0, 0.09, -0.05), box(0.05, 0.15, 0.08, gunMat, 0, -0.11, 0.2));
+  sniper.add(
+    box(0.06, 0.1, 0.8, gunMat, 0, 0, 0),
+    box(0.03, 0.03, 0.4, gunMat2, 0, 0.01, -0.6),
+    box(0.05, 0.06, 0.2, gunMat2, 0, 0.09, -0.05), // dürbün gövdesi
+    box(0.052, 0.052, 0.03, visorMat, 0, 0.09, -0.16), // dürbün camı
+    box(0.05, 0.15, 0.08, gunMat, 0, -0.11, 0.2),
+  );
   for (const gnode of [rifle, pistol, sniper]) {
     const flash = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 6), flashMat);
     flash.position.set(0, 0.01, gnode === pistol ? -0.2 : gnode === sniper ? -0.85 : -0.62); flash.visible = false;
@@ -227,7 +494,8 @@ buildViewmodels();
 // ============================================================ DURUM
 const S = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, onGround: true };
 let yaw = 0, pitch = 0;
-let hp = 100, alive = false, playing = false, paused = false;
+let hp = PLAYER.MAX_HP, alive = false, playing = false, paused = false;
+let inMenu = true, menuT = 0, menuShowcase = null; // ana menüde kamera arenanın etrafında döner
 let myId = 0, myTeam = 0, roomCode = '';
 let curW = 0, scoped = false, reloadLeft = 0, nextShot = 0;
 const ammo = WEAPONS.map((w) => w.mag);
@@ -243,6 +511,7 @@ const joy = { x: 0, y: 0, id: -1, ox: 0, oy: 0 };
 let fireHeld = false, jumpReq = false;
 const keys = {};
 const looks = new Map(); // pointerId -> {x,y}
+let editingLayout = false; // kontrol düzenleme modu açık mı
 
 function applyLook(dx, dy) {
   const k = 0.0042 * sens * (scoped ? SCOPE_FOV[curW] / BASE_FOV : 1);
@@ -251,6 +520,7 @@ function applyLook(dx, dy) {
 }
 function bindLook(el, onDown, onUp) {
   el.addEventListener('pointerdown', (e) => {
+    if (editingLayout) return;
     e.preventDefault(); audio();
     el.setPointerCapture(e.pointerId);
     looks.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -279,6 +549,7 @@ function joyMove(e) {
   if (Math.hypot(joy.x, joy.y) < 0.12) { joy.x = 0; joy.y = 0; }
 }
 jz.addEventListener('pointerdown', (e) => {
+  if (editingLayout) return;
   e.preventDefault(); audio();
   jz.setPointerCapture(e.pointerId); joy.id = e.pointerId; joyMove(e);
 });
@@ -288,7 +559,7 @@ jz.addEventListener('pointerup', joyEnd); jz.addEventListener('pointercancel', j
 
 function tapBtn(id, fn) {
   const el = $(id);
-  el.addEventListener('pointerdown', (e) => { e.preventDefault(); audio(); el.classList.add('on'); fn(); });
+  el.addEventListener('pointerdown', (e) => { if (editingLayout) return; e.preventDefault(); audio(); el.classList.add('on'); fn(); });
   const off = () => el.classList.remove('on');
   el.addEventListener('pointerup', off); el.addEventListener('pointercancel', off);
 }
@@ -296,10 +567,68 @@ tapBtn('bJump', () => { jumpReq = true; });
 tapBtn('bRel', () => startReload());
 tapBtn('bWep', () => switchWeapon((curW + 1) % WEAPONS.length));
 tapBtn('bScope', () => toggleScope());
-$('bTab').addEventListener('pointerdown', (e) => { e.preventDefault(); showBoard(!boardOpen); });
-$('bPause').addEventListener('pointerdown', (e) => { e.preventDefault(); $('pause').classList.remove('hidden'); });
+$('bTab').addEventListener('pointerdown', (e) => { if (editingLayout) return; e.preventDefault(); showBoard(!boardOpen); });
+$('bPause').addEventListener('pointerdown', (e) => { if (editingLayout) return; e.preventDefault(); $('pause').classList.remove('hidden'); });
 $('bResume').onclick = () => $('pause').classList.add('hidden');
 $('bLeave').onclick = () => location.reload();
+
+// ============================================================ KONTROLLERİ SÜRÜKLE-BIRAK İLE DÜZENLE
+const DRAG_IDS = ['bFire', 'bJump', 'bRel', 'bWep', 'bScope', 'bTab', 'bPause', 'joybase'];
+function loadLayout() { try { return JSON.parse(store.get('ctrlLayout', '{}')) || {}; } catch { return {}; } }
+function saveLayout(L) { store.set('ctrlLayout', JSON.stringify(L)); }
+function applySavedLayout() {
+  const L = loadLayout();
+  for (const id of DRAG_IDS) {
+    const el = $(id), pos = L[id];
+    if (!el || !pos) continue;
+    el.style.left = pos.x + 'px'; el.style.top = pos.y + 'px';
+    el.style.right = 'auto'; el.style.bottom = 'auto';
+  }
+}
+applySavedLayout();
+
+function makeDraggable(id) {
+  const el = $(id);
+  if (!el) return;
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  el.addEventListener('pointerdown', (e) => {
+    if (!editingLayout) return;
+    e.preventDefault(); e.stopPropagation();
+    dragging = true; el.setPointerCapture(e.pointerId); el.classList.add('dragging');
+    const r = el.getBoundingClientRect();
+    sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = el.getBoundingClientRect();
+    const nx = clamp(ox + (e.clientX - sx), 0, window.innerWidth - r.width);
+    const ny = clamp(oy + (e.clientY - sy), 0, window.innerHeight - r.height);
+    el.style.left = nx + 'px'; el.style.top = ny + 'px'; el.style.right = 'auto'; el.style.bottom = 'auto';
+  });
+  const end = (e) => {
+    if (!dragging) return;
+    dragging = false; el.classList.remove('dragging');
+    const L = loadLayout();
+    L[id] = { x: parseFloat(el.style.left), y: parseFloat(el.style.top) };
+    saveLayout(L);
+  };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+}
+for (const id of DRAG_IDS) makeDraggable(id);
+
+function setEditingLayout(on) {
+  editingLayout = on;
+  $('touch').classList.toggle('editing', on);
+  $('editBar').classList.toggle('hidden', !on);
+  if (on) { joy.id = -1; joy.x = joy.y = 0; jk.style.transform = 'translate(0,0)'; }
+}
+$('bEditLayout').onclick = () => { $('pause').classList.add('hidden'); setEditingLayout(true); };
+$('bEditDone').addEventListener('pointerdown', (e) => { e.preventDefault(); setEditingLayout(false); });
+$('bEditReset').addEventListener('pointerdown', (e) => {
+  e.preventDefault(); saveLayout({});
+  for (const id of DRAG_IDS) { const el = $(id); if (el) { el.style.left = ''; el.style.top = ''; el.style.right = ''; el.style.bottom = ''; } }
+});
 
 // klavye + fare (bilgisayarda test için)
 window.addEventListener('keydown', (e) => {
@@ -346,10 +675,10 @@ function startReload() {
 const _v = new THREE.Vector3();
 const tracers = [];
 const sparkGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
-const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffe7a0 });
+const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffe7a0, toneMapped: false });
 function addTracer(a, b) {
   const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xfff0b0, transparent: true, opacity: 0.8 }));
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xfff0b0, transparent: true, opacity: 0.8, toneMapped: false }));
   line.frustumCulled = false; scene.add(line); tracers.push({ line, t: 0.07 });
 }
 function addSpark(p) {
@@ -468,7 +797,7 @@ function hostP2P(name, attempt = 0) {
     });
     const local = room.connect((m) => queueMicrotask(() => onMsg(m)));
     net = { send: (o) => local.onMessage(o), close: () => { try { peer.destroy(); } catch {} room.destroy(); } };
-    send({ t: 'join', name, create: true });
+    send({ t: 'join', name, create: true, map: pendingMap });
   });
 }
 
@@ -497,18 +826,20 @@ function connectWS(url, name, code, create) {
   let opened = false, sock;
   try { sock = new WebSocket(url); } catch (e) { busy(false); return showErr('Adres geçersiz.'); }
   net = { send: (o) => { if (sock.readyState === 1) sock.send(JSON.stringify(o)); }, close: () => { try { sock.close(); } catch {} } };
-  sock.onopen = () => { opened = true; send({ t: 'join', name, room: code, create: !!create }); };
+  sock.onopen = () => { opened = true; send({ t: 'join', name, room: code, create: !!create, map: create ? pendingMap : undefined }); };
   sock.onerror = () => {};
   sock.onclose = () => { if (!opened) { busy(false); showErr('Sunucuya bağlanılamadı. Adresi kontrol et.'); } else lost(); };
   sock.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } onMsg(m); };
 }
 
+let pendingMap = 'classic';
 function connect(create) {
   audio();
   const name = $('name').value.trim() || 'Oyuncu' + Math.floor(Math.random() * 90 + 10);
   const code = $('code').value.trim().toUpperCase();
   const url = normalizeUrl($('server').value);
   if (!create && code.length < 4) return showErr('4 harfli oda kodunu yaz.');
+  if (create) pendingMap = $('mapSel') ? $('mapSel').value : 'classic';
   store.set('name', name);
   busy(true); showErr('Bağlanılıyor…');
   if (url) return connectWS(url, name, code, create);
@@ -540,14 +871,20 @@ function onMsg(m) {
     case 'welcome':
       myId = m.id; myTeam = m.team; roomCode = m.room; score = m.score;
       setRoster(m.players);
-      $('menu').classList.add('hidden'); $('hud').classList.remove('hidden'); $('touch').classList.remove('hidden');
-      $('room').textContent = 'ODA ' + roomCode;
-      $('lim').textContent = `${TEAM_NAMES[0]} · ilk ${SCORE_LIMIT} · ${TEAM_NAMES[1]}`;
-      playing = true; updScore(); setMsg('Takımın: ' + TEAM_NAMES[myTeam], 'Arkadaşlarına oda kodunu ver: ' + roomCode);
-      setTimeout(() => setMsg(''), 9000);
-      try { screen.orientation.lock('landscape').catch(() => {}); } catch {}
-      try { navigator.wakeLock && navigator.wakeLock.request('screen').catch(() => {}); } catch {}
-      setInterval(() => send({ t: 'ping', c: performance.now() }), 2000);
+      showErr('Harita yükleniyor…');
+      loadMapScene(m.map || 'classic').finally(() => {
+        if (menuShowcase) { scene.remove(menuShowcase); menuShowcase = null; }
+        inMenu = false;
+        showErr('');
+        $('menu').classList.add('hidden'); $('hud').classList.remove('hidden'); $('touch').classList.remove('hidden');
+        $('room').textContent = 'ODA ' + roomCode;
+        $('lim').textContent = `${TEAM_NAMES[0]} · ilk ${SCORE_LIMIT} · ${TEAM_NAMES[1]}`;
+        playing = true; updScore(); setMsg('Takımın: ' + TEAM_NAMES[myTeam], 'Arkadaşlarına oda kodunu ver: ' + roomCode);
+        setTimeout(() => setMsg(''), 9000);
+        try { screen.orientation.lock('landscape').catch(() => {}); } catch {}
+        try { navigator.wakeLock && navigator.wakeLock.request('screen').catch(() => {}); } catch {}
+        setInterval(() => send({ t: 'ping', c: performance.now() }), 2000);
+      });
       break;
     case 'roster': setRoster(m.players); break;
     case 'spawn':
@@ -618,7 +955,7 @@ function die(killerId) {
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function setMsg(a, b) { $('msg').innerHTML = a ? esc(a) + (b ? `<small>${esc(b)}</small>` : '') : ''; }
-function updHp() { $('hpn').textContent = Math.max(0, Math.ceil(hp)); $('hpb').style.width = clamp(hp, 0, 100) + '%'; $('hpn').style.color = hp <= 30 ? '#ff4655' : ''; }
+function updHp() { $('hpn').textContent = Math.max(0, Math.ceil(hp)); $('hpb').style.width = (clamp(hp, 0, PLAYER.MAX_HP) / PLAYER.MAX_HP * 100) + '%'; $('hpn').style.color = hp <= PLAYER.MAX_HP * 0.3 ? '#ff4655' : ''; }
 function updScore() { $('sa').textContent = score[0]; $('sb').textContent = score[1]; }
 
 let boardOpen = false;
@@ -684,6 +1021,20 @@ function update(dt, now) {
 }
 
 function updateCamera(dt) {
+  if (inMenu) { // ana menü: arenanın etrafında yavaşça dönen sinematik kamera (gerçek oyun hissi)
+    menuT += dt;
+    const ang = menuT * 0.11, r = 15;
+    camera.rotation.order = 'YXZ';
+    camera.position.set(Math.cos(ang) * r, 3.4 + Math.sin(menuT * 0.25) * 0.4, Math.sin(ang) * r - 6);
+    camera.lookAt(0, 1.3, -6);
+    camera.rotation.z = 0;
+    if (menuShowcase) {
+      menuShowcase.rotation.y += dt * 0.3;
+      if (menuShowcase.userData.mixer) menuShowcase.userData.mixer.update(dt);
+    }
+    vmRoot.visible = false;
+    return;
+  }
   const speed = Math.hypot(S.vx, S.vz);
   bobT += dt * speed * 1.6;
   const eye = alive ? PLAYER.EYE : 0.35;
@@ -705,9 +1056,15 @@ function updateRemotes(dt, now) {
     m.visible = r.alive;
     m.position.set(r.cx, r.cy, r.cz); m.rotation.y = r.yaw;
     const sp = Math.hypot(r.cx - ox, r.cz - oz) / Math.max(dt, 0.001);
-    r.walk += dt * sp * 1.8;
-    const sw = Math.sin(r.walk) * Math.min(1, sp / 3) * 0.7;
-    m.userData.legL.rotation.x = sw; m.userData.legR.rotation.x = -sw;
+    if (m.userData.isGltf) {
+      const cn = m.userData.clipNames;
+      playClip(m, sp > 4.2 ? cn.run : sp > 0.3 ? cn.walk : cn.idle);
+      m.userData.mixer.update(dt);
+    } else {
+      r.walk += dt * sp * 1.8;
+      const sw = Math.sin(r.walk) * Math.min(1, sp / 3) * 0.7;
+      m.userData.legL.rotation.x = sw; m.userData.legR.rotation.x = -sw;
+    }
     if (m.userData.flashT > 0) { m.userData.flashT -= dt; if (m.userData.flashT <= 0) m.userData.flash.visible = false; }
   }
 }
