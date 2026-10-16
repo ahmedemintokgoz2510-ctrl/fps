@@ -58,7 +58,7 @@ function broadcast(room, obj, except) {
 }
 
 function makeRoom(code) {
-  return { code, players: new Map(), score: [0, 0], over: false, spawnIdx: [0, 0] };
+  return { code, players: new Map(), score: [0, 0], over: false, spawnIdx: [0, 0], map: 'classic' };
 }
 
 function pickTeam(room) {
@@ -163,6 +163,7 @@ wss.on('connection', (ws) => {
         room = makeRoom(code); rooms.set(code, room);
       }
       if (room.players.size >= MAX_PLAYERS) { send(ws, { t: 'err', msg: 'Oda dolu' }); room = null; return; }
+      if (m.create) room.map = String(m.map || 'classic').replace(/[^a-z]/g, '').slice(0, 16) || 'classic';
       const name = String(m.name || 'Oyuncu').replace(/[<>&"']/g, '').slice(0, 12) || 'Oyuncu';
       me = {
         id: nextId++, ws, name, team: pickTeam(room), k: 0, d: 0,
@@ -170,7 +171,7 @@ wss.on('connection', (ws) => {
         lastShot: 0, protectUntil: 0,
       };
       room.players.set(me.id, me);
-      send(ws, { t: 'welcome', id: me.id, room: room.code, team: me.team, score: room.score, players: fullInfo(room) });
+      send(ws, { t: 'welcome', id: me.id, room: room.code, team: me.team, score: room.score, players: fullInfo(room), map: room.map });
       spawnPlayer(room, me);
       broadcast(room, { t: 'roster', players: fullInfo(room) });
       return;
