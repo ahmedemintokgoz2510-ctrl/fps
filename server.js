@@ -17,6 +17,7 @@ const PORT = process.env.PORT || 3000;
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml',
+  '.glb': 'model/gltf-binary',
 };
 
 // Aynı sunucu hem oyunu (tarayıcıda test için) hem WebSocket'i sunar.
