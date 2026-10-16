@@ -10,13 +10,12 @@ need(core);
 fs.copyFileSync(core, 'www/three.module.js');
 console.log('three.module.js kopyalandı');
 
-// GLTFLoader ve SkeletonUtils "three" paketinden bare-import ile 'three' çağırır;
-// www'da paket yöneticisi olmadığı için bunu yerel dosyaya işaret edecek şekilde değiştiriyoruz.
+// GLTFLoader ve SkeletonUtils, 'three' paketinden bare-import ile import eder.
+// index.html'deki <script type="importmap"> bunu './three.module.js'ye yönlendiriyor,
+// o yüzden burada dosyaları OLDUĞU GİBİ (değiştirmeden) kopyalamak yeterli ve daha güvenilir.
 function copyAddon(src, dest) {
   need(src);
-  let txt = fs.readFileSync(src, 'utf8');
-  txt = txt.replace(/from\s+'three'/g, "from './three.module.js'");
-  fs.writeFileSync(dest, txt);
+  fs.copyFileSync(src, dest);
   console.log(dest + ' kopyalandı');
 }
 copyAddon('node_modules/three/examples/jsm/loaders/GLTFLoader.js', 'www/GLTFLoader.js');
