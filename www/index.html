@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#0f1923">
 <title>Arkadaş FPS</title>
+<!-- GLTFLoader/SkeletonUtils 'three' paketini bare-import ile çağırır; bunu yerel dosyaya yönlendiriyoruz.
+     Bu etiket tüm modül importlarından (dinamik import() dahil) ÖNCE gelmeli. -->
+<script type="importmap">{"imports":{"three":"./three.module.js"}}</script>
 <style>
 :root{--bg:#0f1923;--panel:#1b2733;--red:#ff4655;--red2:#c71f3a;--cream:#ece8e1;--blue:#37d5ff;--dim:#8b97a3;--line:#2c3c4d;--glow:0 0 24px rgba(255,70,85,.35)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
@@ -17,41 +20,47 @@ b,h1,h2,button,.lbl{text-transform:uppercase;letter-spacing:.04em}
 /* ---------- MENÜ ---------- */
 /* arka planda canlı 3D sahne (arena + asker modeli) görünsün diye menü artık tam ekranı
    kaplayan opak bir panel değil; soldan koyu, sağa doğru şeffaflaşan bir "oyun menüsü" */
-#menu{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:flex-start;
-  background:
-    linear-gradient(100deg,#0b121af5 0%,#0f1923e6 42%,#0f192399 58%,transparent 78%),
-    linear-gradient(0deg,#0b121ad0 0%,transparent 16%,transparent 84%,#0b121ad0 100%);
-  padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom) calc(16px + env(safe-area-inset-left))}
-.card{width:min(620px,100%);max-height:100%;overflow:auto;display:grid;grid-template-columns:1fr 1fr;gap:18px 28px;
-  padding:26px 28px;background:linear-gradient(165deg,#1b2733d9,#141e28d9);border:1px solid var(--line);
-  border-radius:8px;box-shadow:0 20px 60px #000a,inset 0 1px 0 #ffffff14;position:relative;overflow-x:hidden;
-  backdrop-filter:blur(2px)}
-.card:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(180deg,var(--red),var(--blue))}
-.card h1{grid-column:1/-1;margin:0;font-size:36px;font-weight:900;line-height:1;letter-spacing:.02em;
-  text-shadow:0 0 18px rgba(55,213,255,.35)}
-.card h1 span{color:var(--red);text-shadow:var(--glow)}
-.sub{grid-column:1/-1;margin:-10px 0 4px;color:var(--dim);font-size:14px;padding-bottom:10px;border-bottom:1px solid var(--line)}
-.col{display:flex;flex-direction:column;gap:10px}
+/* PUBG tarzı lobi: ortada canlı 3D sahne (karakter) açıkta kalsın diye tek kutu yerine
+   üç bağımsız panel (sol/sağ/alt-sol) + üstte başlık; kenarlarda hafif karartma var. */
+#menu{position:fixed;inset:0;z-index:50;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 42%,transparent 32%,#0b121a55 72%,#0b121a9c 100%)}
+#menu>*{pointer-events:auto}
+.hudtitle{position:absolute;left:0;right:0;top:calc(14px + env(safe-area-inset-top));text-align:center;pointer-events:none}
+.hudtitle h1{margin:0;font-size:32px;font-weight:900;letter-spacing:.02em;text-shadow:0 0 18px rgba(55,213,255,.35),0 2px 10px #000a}
+.hudtitle h1 span{color:var(--red);text-shadow:var(--glow)}
+.hudtitle .sub{margin:2px 0 0;color:var(--cream);opacity:.75;font-size:13px;text-shadow:0 2px 6px #000a}
+.panel{position:absolute;width:232px;max-width:44vw;display:flex;flex-direction:column;gap:10px;
+  padding:18px 18px;background:linear-gradient(165deg,#1b2733e8,#141e28e8);border:1px solid var(--line);
+  border-radius:8px;box-shadow:0 16px 40px #000a,inset 0 1px 0 #ffffff14;backdrop-filter:blur(3px);
+  max-height:calc(100% - 100px - env(safe-area-inset-top) - env(safe-area-inset-bottom));overflow:auto}
+.panel-left{left:calc(16px + env(safe-area-inset-left));top:50%;transform:translateY(-54%)}
+.panel-right{right:calc(16px + env(safe-area-inset-right));top:50%;transform:translateY(-54%)}
+.panel-bottom{left:calc(16px + env(safe-area-inset-left));bottom:calc(14px + env(safe-area-inset-bottom));
+  max-height:none}
 .lbl{font-size:11px;color:var(--dim);font-weight:800;margin-bottom:-4px;letter-spacing:.08em}
 input[type=text]{width:100%;padding:13px 14px;border:2px solid #34465a;background:#0b121aaa;color:var(--cream);
   font:700 18px inherit;font-family:inherit;border-radius:4px;outline:none;-webkit-user-select:text;user-select:text;
   transition:border-color .15s,box-shadow .15s}
 input[type=text]:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(55,213,255,.15)}
 #code{text-align:center;letter-spacing:.3em;font-size:26px}
-button{font-family:inherit;font-weight:800;font-size:18px;padding:15px;border:0;border-radius:4px;cursor:pointer;color:var(--cream);
+button{font-family:inherit;font-weight:800;font-size:16px;padding:14px;border:0;border-radius:4px;cursor:pointer;color:var(--cream);
   transition:transform .08s,filter .12s;letter-spacing:.03em}
 .btn-red{background:linear-gradient(180deg,var(--red),var(--red2));box-shadow:0 6px 16px rgba(255,70,85,.35),inset 0 1px 0 #ffffff33}
 .btn-red:active{filter:brightness(.85);transform:translateY(1px) scale(.99)}
 .btn-ghost{background:linear-gradient(180deg,#2f4257,#1f2e3d);border:1px solid #3a4e63;box-shadow:inset 0 1px 0 #ffffff1a}
 .btn-ghost:active{filter:brightness(.85);transform:translateY(1px) scale(.99)}
-#err{color:#ffb4bb;min-height:20px;font-size:15px;font-weight:700}
-.opt{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:15px;font-weight:700;
-  background:#ffffff08;padding:8px 10px;border-radius:4px}
+#err{color:#ffb4bb;min-height:20px;font-size:13px;font-weight:700}
+.opt{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;font-weight:700;
+  background:#ffffff08;padding:7px 10px;border-radius:4px}
 .opt input[type=range]{flex:1;accent-color:var(--red)}
 select{background:#0b121a;color:var(--cream);border:2px solid #34465a;padding:6px;font:inherit;border-radius:3px}
-#mapSel{width:100%;padding:11px 10px;font-weight:700}
-@media (max-height:420px){.card{padding:8px 14px;gap:8px 20px}.card h1{font-size:24px}.sub{display:none}button{padding:10px;font-size:16px}input[type=text]{padding:8px 10px}}
-@media (max-width:620px){.card{grid-template-columns:1fr}}
+.mapchips{display:flex;flex-direction:column;gap:6px}
+.mapchip{text-align:left;background:#ffffff08;border:1px solid var(--line);color:var(--cream);padding:10px 12px;
+  border-radius:4px;font-weight:700;font-size:12px;letter-spacing:.01em}
+.mapchip.active{background:linear-gradient(180deg,var(--red),var(--red2));border-color:transparent;box-shadow:var(--glow)}
+@media (max-height:420px){.panel{padding:10px 14px;gap:6px}.hudtitle h1{font-size:22px}.hudtitle .sub{display:none}
+  button{padding:9px;font-size:14px}input[type=text]{padding:8px 10px}.panel-left,.panel-right{transform:translateY(-50%);max-height:calc(100% - 20px)}}
+@media (max-width:760px){.panel{width:200px}}
 
 /* ---------- DİKEY UYARISI ---------- */
 #rotate{display:none;position:fixed;inset:0;z-index:200;background:var(--bg);align-items:center;justify-content:center;text-align:center;font-size:24px;font-weight:800;padding:30px}
@@ -176,34 +185,37 @@ tr:last-child td{border-bottom:0}
 </div>
 
 <div id="menu">
-  <div class="card">
-    <h1>ARKADAŞ <span>FPS</span></h1>
-    <p class="sub">Takım ölüm maçı · 5v5 · ilk 30 öldürmeye ulaşan kazanır · sürüm 4</p>
-    <div class="col">
-      <div class="lbl">Oyuncu adı</div>
-      <input type="text" id="name" maxlength="12" placeholder="Adın" autocomplete="off">
-      <details><summary class="lbl">Gelişmiş: özel sunucu (gerekmez, boş bırak)</summary>
-        <input type="text" id="server" placeholder="wss://sunucun.onrender.com" autocomplete="off" autocapitalize="off" spellcheck="false" style="margin-top:6px"></details>
-      <div class="lbl" style="line-height:1.3">Oda kuran kişinin telefonu sunucu olur. Kurduktan sonra oyundan çıkmasın.</div>
-      <div id="err"></div>
+  <div class="hudtitle"><h1>ARKADAŞ <span>FPS</span></h1><p class="sub">Takım ölüm maçı · 5v5 · ilk 30 öldürmeye ulaşan kazanır</p></div>
+
+  <div class="panel panel-left">
+    <div class="lbl">Oyuncu adı</div>
+    <input type="text" id="name" maxlength="12" placeholder="Adın" autocomplete="off">
+    <div class="lbl" style="margin-top:12px">Harita</div>
+    <div id="mapChips" class="mapchips">
+      <button type="button" class="mapchip active" data-map="classic">Klasik Kutu Arena</button>
+      <button type="button" class="mapchip" data-map="depot">Depo Bölgesi</button>
+      <button type="button" class="mapchip" data-map="outpost">İleri Karakol</button>
+      <button type="button" class="mapchip" data-map="haven">Liman Sahası</button>
     </div>
-    <div class="col">
-      <div class="lbl">Harita (oda kurarken seçilir)</div>
-      <select id="mapSel">
-        <option value="classic">Klasik Kutu Arena</option>
-        <option value="depot">Depo Bölgesi</option>
-        <option value="outpost">İleri Karakol</option>
-        <option value="haven">Liman Sahası</option>
-      </select>
-      <button class="btn-red" id="bCreate">ODA KUR</button>
-      <div class="lbl">veya arkadaşının oda kodu</div>
-      <input type="text" id="code" maxlength="4" placeholder="ABCD" autocomplete="off" autocapitalize="characters">
-      <button class="btn-ghost" id="bJoin">ODAYA KATIL</button>
-      <div class="opt"><span>Hassasiyet</span><input type="range" id="sens" min="0.4" max="2.5" step="0.05" value="1"></div>
-      <div class="opt"><span>Nişan yardımı</span><input type="checkbox" id="assist" checked></div>
-      <div class="opt"><span>Grafik</span>
-        <select id="quality"><option value="high">Yüksek (gölge)</option><option value="low">Düşük (akıcı)</option></select></div>
-    </div>
+    <div class="opt" style="margin-top:10px"><span>Hassasiyet</span><input type="range" id="sens" min="0.4" max="2.5" step="0.05" value="1"></div>
+    <div class="opt"><span>Nişan yardımı</span><input type="checkbox" id="assist" checked></div>
+    <div class="opt"><span>Grafik</span>
+      <select id="quality"><option value="high">Yüksek (gölge)</option><option value="low">Düşük (akıcı)</option></select></div>
+  </div>
+
+  <div class="panel panel-right">
+    <div class="lbl">Arkadaşının oda kodu</div>
+    <input type="text" id="code" maxlength="4" placeholder="ABCD" autocomplete="off" autocapitalize="characters">
+    <button class="btn-ghost" id="bJoin">ODAYA KATIL</button>
+    <details style="margin-top:8px"><summary class="lbl">Gelişmiş: özel sunucu (gerekmez, boş bırak)</summary>
+      <input type="text" id="server" placeholder="wss://sunucun.onrender.com" autocomplete="off" autocapitalize="off" spellcheck="false" style="margin-top:6px"></details>
+    <div id="err"></div>
+  </div>
+
+  <div class="panel panel-bottom">
+    <button class="btn-red" id="bCreate">ODA KUR</button>
+    <button class="btn-ghost" id="bBots">BOTLARLA OYNA (ÇEVRİMDIŞI)</button>
+    <div class="lbl" style="line-height:1.3;max-width:230px">Oda kuran kişinin telefonu sunucu olur, kurduktan sonra oyundan çıkmasın. Botlar internet istemez.</div>
   </div>
 </div>
 

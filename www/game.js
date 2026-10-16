@@ -21,11 +21,12 @@ if (!THREE) {
 // oyun eski kutu-model moduna otomatik geri döner, oyun kırılmaz.
 let GLTFLoader = null, SkeletonUtils = null;
 for (const u of ['./GLTFLoader.js', 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js', 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js']) {
-  try { ({ GLTFLoader } = await import(u)); break; } catch (e) { /* sıradakini dene */ }
+  try { ({ GLTFLoader } = await import(u)); break; } catch (e) { console.warn('GLTFLoader yüklenemedi:', u, e); }
 }
 for (const u of ['./SkeletonUtils.js', 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/utils/SkeletonUtils.js', 'https://unpkg.com/three@0.160.0/examples/jsm/utils/SkeletonUtils.js']) {
-  try { SkeletonUtils = await import(u); break; } catch (e) { /* sıradakini dene */ }
+  try { SkeletonUtils = await import(u); break; } catch (e) { console.warn('SkeletonUtils yüklenemedi:', u, e); }
 }
+if (!GLTFLoader) console.error('GLTFLoader hiç yüklenemedi — özel haritalar/3D karakterler devre dışı, klasik kutu moduna dönülecek.');
 const gltfLoader = GLTFLoader ? new GLTFLoader() : null;
 
 const $ = (id) => document.getElementById(id);
@@ -293,6 +294,8 @@ async function loadMapScene(id) {
     customMapGroup = root; scene.add(root);
     classicMapGroup.visible = false; // duvarlar/siperler görünmez ama çarpışma aynen çalışır
   } catch (e) {
+    console.error('Harita yüklenemedi (' + def.file + '):', e);
+    showErr('Harita yüklenemedi, klasik haritayla devam: ' + (e && e.message ? e.message : e));
     classicMapGroup.visible = true; // model yüklenemedi, klasik haritayla devam
   }
 }
@@ -379,10 +382,17 @@ async function preloadSoldiers() {
   })));
   modelsReady = soldierGLTF.some(Boolean);
 }
-$('bCreate').disabled = $('bJoin').disabled = true;
+// Web/Capacitor webview'de yatay kilidi tarayıcı API'si genelde kullanıcı dokunuşu ister;
+// ilk dokunuşta deniyoruz (APK'da ayrıca native seviyede android:screenOrientation ile zorlanıyor).
+function tryLockLandscape() { try { screen.orientation.lock('landscape').catch(() => {}); } catch {} }
+tryLockLandscape();
+document.addEventListener('pointerdown', tryLockLandscape, { once: true });
+document.addEventListener('touchstart', tryLockLandscape, { once: true, passive: true });
+
+$('bCreate').disabled = $('bJoin').disabled = $('bBots').disabled = true;
 $('err').textContent = 'Modeller yükleniyor…';
 preloadSoldiers().then(() => {
-  $('bCreate').disabled = $('bJoin').disabled = false;
+  $('bCreate').disabled = $('bJoin').disabled = $('bBots').disabled = false;
   $('err').textContent = '';
   if (soldierGLTF[0]) {
     menuShowcase = buildGltfAvatar(0, '', false);
@@ -833,13 +843,21 @@ function connectWS(url, name, code, create) {
 }
 
 let pendingMap = 'classic';
+let selectedMapId = 'classic';
+document.querySelectorAll('.mapchip').forEach((el) => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.mapchip').forEach((e) => e.classList.remove('active'));
+    el.classList.add('active');
+    selectedMapId = el.dataset.map;
+  });
+});
 function connect(create) {
   audio();
   const name = $('name').value.trim() || 'Oyuncu' + Math.floor(Math.random() * 90 + 10);
   const code = $('code').value.trim().toUpperCase();
   const url = normalizeUrl($('server').value);
   if (!create && code.length < 4) return showErr('4 harfli oda kodunu yaz.');
-  if (create) pendingMap = $('mapSel') ? $('mapSel').value : 'classic';
+  if (create) pendingMap = selectedMapId;
   store.set('name', name);
   busy(true); showErr('Bağlanılıyor…');
   if (url) return connectWS(url, name, code, create);
@@ -849,6 +867,58 @@ function connect(create) {
 }
 $('bCreate').onclick = () => connect(true);
 $('bJoin').onclick = () => connect(false);
+
+// ============================================================ ÇEVRİMDIŞI BOT MODU (internet gerekmez)
+// Botlar da gerçek oyuncular gibi engine.js'in oda simülasyonuna bağlanır (isabet/hasar/skor aynı kod);
+// sadece hareket+ateş kararlarını basit bir yapay zekâ döngüsü verir.
+const BOT_NAMES = ['Kurt', 'Şahin', 'Kobra', 'Tilki', 'Panter', 'Çakal', 'Baykuş', 'Çita', 'Yılan', 'Vaşak'];
+let botTimers = [];
+function stopBots() { for (const t of botTimers) clearInterval(t); botTimers = []; }
+function botWaypoint() {
+  const a = Math.random() * Math.PI * 2, r = Math.random() * (MAP_HALF - 6);
+  return { x: Math.cos(a) * r, z: Math.sin(a) * r };
+}
+function startBotAI(bc, team, sp) {
+  const b = { x: sp.x, z: sp.z, yaw: sp.yaw, wp: null, nextShot: performance.now() + 1000 + Math.random() * 2000 };
+  const iv = setInterval(() => {
+    if (!b.wp || Math.hypot(b.x - b.wp.x, b.z - b.wp.z) < 1.5) b.wp = botWaypoint();
+    const dx = b.wp.x - b.x, dz = b.wp.z - b.z, d = Math.hypot(dx, dz) || 1;
+    const vx = (dx / d) * 2.4, vz = (dz / d) * 2.4;
+    const fake = { x: b.x, y: 0, z: b.z, vx, vy: 0, vz, onGround: true };
+    stepPlayer(fake, 0.1);
+    b.x = fake.x; b.z = fake.z;
+    b.yaw = Math.atan2(vx, vz) + (Math.random() - 0.5) * 0.3;
+    bc.onMessage({ t: 's', x: b.x, y: 0, z: b.z, yaw: b.yaw, pitch: 0, w: 0 });
+    if (performance.now() > b.nextShot && alive && myTeam !== team) {
+      const dxs = S.x - b.x, dzs = S.z - b.z, dd = Math.hypot(dxs, dzs);
+      if (dd < 24) {
+        b.nextShot = performance.now() + 900 + Math.random() * 1500;
+        const len = Math.hypot(dxs, PLAYER.EYE, dzs) || 1;
+        bc.onMessage({ t: 'shoot', dx: dxs / len, dy: PLAYER.EYE / len, dz: dzs / len });
+      }
+    }
+  }, 100);
+  botTimers.push(iv);
+}
+function addBot(room, idx) {
+  let team = 0, spawnInfo = SPAWNS[0][0];
+  const bc = room.connect((m) => { if (m.t === 'welcome') team = m.team; if (m.t === 'spawn') spawnInfo = { x: m.x, z: m.z, yaw: m.yaw }; });
+  bc.onMessage({ t: 'join', name: BOT_NAMES[idx % BOT_NAMES.length], create: false });
+  startBotAI(bc, team, spawnInfo);
+}
+function playBots() {
+  audio();
+  const name = $('name').value.trim() || 'Oyuncu' + Math.floor(Math.random() * 90 + 10);
+  store.set('name', name);
+  pendingMap = selectedMapId;
+  const code = newCode();
+  const room = createRoom(code);
+  const local = room.connect((m) => queueMicrotask(() => onMsg(m)));
+  net = { send: (o) => local.onMessage(o), close: () => { stopBots(); room.destroy(); } };
+  send({ t: 'join', name, create: true, map: pendingMap });
+  for (let i = 0; i < 8; i++) addBot(room, i);
+}
+$('bBots').onclick = playBots;
 
 function setRoster(list) {
   roster.clear();
